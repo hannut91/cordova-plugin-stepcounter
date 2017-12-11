@@ -24,12 +24,12 @@ package net.texh.cordovapluginstepcounter;
 
  */
 
-import android.app.AlarmManager;
-import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.database.Cursor;
+import android.database.sqlite.SQLiteDatabase;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
@@ -37,31 +37,26 @@ import android.hardware.SensorManager;
 import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
-import android.widget.Toast;
-
-import org.json.JSONException;
-import org.json.JSONObject;
-
-import java.text.SimpleDateFormat;
 import java.util.Date;
 
-import static java.lang.System.currentTimeMillis;
 
 public class StepCounterService extends Service implements SensorEventListener {
 
-    private final  String TAG        = "StepCounterService";
+    private final  String TAG = "StepCounterService";
     private IBinder mBinder = null;
-    private static boolean isRunning = false;
-
     private SensorManager mSensorManager;
-    private Sensor        mStepSensor;
-    private Boolean       haveSetOffset   = false;
+    private Sensor mStepSensor;
+    SQLiteDatabase database;
+    long startDate;
 
-    /*public void stopTracking() {
-        Log.i(TAG, "Setting isRunning flag to false");
-        isRunning = false;
-        mSensorManager.unregisterListener(this);
-    }*/
+    @Override
+    public void onCreate() {
+        super.onCreate();
+        Log.i(TAG, "onCreate");
+        openDatabase();
+        createTable();
+        startDate = new Date().getTime();
+    }
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -72,165 +67,76 @@ public class StepCounterService extends Service implements SensorEventListener {
 
     public class StepCounterServiceBinder extends Binder {
         StepCounterService getService() {
-            // Return this instance of StepCounterService so clients can call public methods
             return StepCounterService.this;
         }
     }
 
-    @Override
-    public void onCreate() {
-        super.onCreate();
-        Log.i(TAG, "onCreate");
-        // Do some setup stuff
+    public void openDatabase() {
+        database = openOrCreateDatabase("getwalk.db", MODE_PRIVATE, null);
+    }
+
+    public void createTable() {
+        if(database  != null) {
+            String sql = "CREATE TABLE IF NOT EXISTS steps (_id integer PRIMARY KEY autoincrement, startDate integer, endDate integer, stepCount integer)";
+            database.execSQL(sql);
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        Log.i(TAG, "onStartCommand");
-
-        SharedPreferences sharedPref = getSharedPreferences(CordovaStepCounter.USER_DATA_PREF, Context.MODE_PRIVATE);
-        Boolean pActive = CordovaStepCounter.getPedometerIsActive(sharedPref);
-
-        //Service should not be activated (pedometer stopped by user)
-        if(!pActive) {
-            Log.i(TAG, "/!\\ onStartCommand Ask to stopSelf, should not be launched ! Should not even be here (maybe 4.4.2 specific bug causes a restart here)");
-            stopSelf();
-            return START_NOT_STICKY;
-        }
-
-        Log.i(TAG, "- Relaunch service in 1 hour (4.4.2 start_sticky bug ) : ");
-        Intent newServiceIntent = new Intent(this,StepCounterService.class);
-        AlarmManager aManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-        PendingIntent stepIntent = PendingIntent.getService(getApplicationContext(), 10, newServiceIntent, PendingIntent.FLAG_UPDATE_CURRENT);
-        //PendingIntent.GetService (ApplicationContext, 10, intent2, PendingIntentFlags.UpdateCurrent);
-        aManager.set(AlarmManager.RTC, java.lang.System.currentTimeMillis() + 1000 * 60 * 60, stepIntent);
-
-
-        if (isRunning /* || has no step sensors */) {
-            Log.i(TAG, "Not initialising sensors");
-            return Service.START_STICKY;
-        }
-
-        Log.i(TAG, "Initialising sensors");
-        doInit();
-
-        isRunning = true;
-        return Service.START_STICKY;
-    }
-
-
-    public void doInit() {
-        Log.i(TAG, "Registering STEP_DETECTOR sensor");
-        haveSetOffset = false;
-
+        Log.i(TAG, "onStartCommand is called");
         mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         mStepSensor    = mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
         mSensorManager.registerListener(this, mStepSensor, SensorManager.SENSOR_DELAY_NORMAL);
+        return Service.START_STICKY;
     }
 
     @Override
     public boolean stopService(Intent intent) {
-        Log.i(TAG, "- Received stop: " + intent);
-        //Stop listening to events when stop() is called
-        if(isRunning){
-            mSensorManager.unregisterListener(this);
-            isRunning = false;
-        }
-
-        SharedPreferences sharedPref = getSharedPreferences(CordovaStepCounter.USER_DATA_PREF, Context.MODE_PRIVATE);
-        Boolean pActive = CordovaStepCounter.getPedometerIsActive(sharedPref);
-        if(pActive) {
-            Log.i(TAG, "- Relaunch service in 500ms" );
-            //Autorelaunch the service
-            //@TODO should test if stopService is called from killing app or from calling stop() method in CordovaStepCounter
-            Intent newServiceIntent = new Intent(this,StepCounterService.class);
-            AlarmManager aManager = (AlarmManager) getSystemService(Context.ALARM_SERVICE);
-            aManager.set(AlarmManager.RTC, java.lang.System.currentTimeMillis() + 500, PendingIntent.getService(this,11,newServiceIntent,0));
-        }else{
-            Log.i(TAG, "StepCounter stopped, will not relaunch service" );
-        }
-
-
+        Log.i(TAG, "stopService is called" + intent);
+        mSensorManager.unregisterListener(this);
         return super.stopService(intent);
     }
 
     @Override
     public void onSensorChanged(SensorEvent sensorEvent) {
-        //Log.i(TAG, "onSensorChanged event!");
-        Integer totalSteps = 0;
-        Integer steps = Math.round(sensorEvent.values[0]);
-        Integer daySteps = 0;
-        Integer dayOffset = 0;
+        long endDate = new Date().getTime();
+        int stepCount = (int)sensorEvent.values[0];
+        insertData(endDate, stepCount);
+    }
 
-        Date currentDate = new Date();
-        SimpleDateFormat dateFormatter = new SimpleDateFormat("yyyy-MM-dd");
+    public void insertData(long endDate, int stepCount) {
+        if(database != null) {
+            SharedPreferences sharedPref = getSharedPreferences("previousStepCount", Context.MODE_PRIVATE);
+            int previous = sharedPref.getInt("previousStepCount", 0);
 
-        String currentDateString = dateFormatter.format(currentDate);
-        SharedPreferences sharedPref = getSharedPreferences(CordovaStepCounter.USER_DATA_PREF, Context.MODE_PRIVATE);
-        SharedPreferences.Editor editor = sharedPref.edit();
-
-        JSONObject pData = new JSONObject();
-        JSONObject dayData = new JSONObject();
-        if(sharedPref.contains(CordovaStepCounter.PEDOMETER_HISTORY_PREF)){
-            String pDataString = sharedPref.getString(CordovaStepCounter.PEDOMETER_HISTORY_PREF,"{}");
-            try{
-                pData = new JSONObject(pDataString);
-                Log.d(TAG," got json shared prefs "+pData.toString());
-            }catch (JSONException err){
-                Log.d(TAG," Exception while parsing json string : "+pDataString);
+            if(stepCount < previous) {
+                previous = 0;
             }
-        }
 
-        //Get the datas previously stored for today
-        if(pData.has(currentDateString)){
-            try {
-                dayData = pData.getJSONObject(currentDateString);
-                dayOffset = dayData.getInt("offset");
-                daySteps = dayData.getInt("steps");
-                haveSetOffset = true;
+            String latestSelectQuery = "SELECT * FROM steps ORDER BY _id DESC LIMIT 1";
+            Cursor cursor = database.rawQuery(latestSelectQuery, null);
+            int latestStepCount = 0;
 
-                //If steps is less thant dayOffset, means that dayOffset is not correct (due to reboot in the middle of the day)
-                if(steps < dayOffset){
-                    haveSetOffset = false;
-                }
-            }catch(JSONException err){
-                Log.e(TAG,"Exception while getting Object from JSON for "+currentDateString);
+            if (cursor.getCount() > 0) {
+                cursor.moveToNext();
+                latestStepCount = cursor.getInt(3);
             }
-        }else{
-            // If there is no data, we will have to save offset
-            haveSetOffset = false;
+
+            Log.i(TAG, "latestStepCount: " + latestStepCount);
+            Log.i(TAG, "previous: " + previous);
+            Log.i(TAG, "stepCount: " + stepCount);
+
+            latestStepCount = latestStepCount + (stepCount - previous);
+
+            SharedPreferences.Editor editor = sharedPref.edit();
+            editor.putInt("previousStepCount", stepCount);
+            editor.commit();
+
+            String sql = "insert into steps (startDate, endDate, stepCount) values (?, ?, ?)";
+            Object[] params = {startDate, endDate, latestStepCount};
+            database.execSQL(sql, params);
         }
-
-        //Counter += 1
-        Integer stepsCounted = CordovaStepCounter.getTotalCount(sharedPref);
-        stepsCounted += 1;
-        CordovaStepCounter.setTotalCount(sharedPref,stepsCounted);
-
-        //If offset has not been set or if saved offset is greater than today offset
-        if (!haveSetOffset) {
-            //Change offset for current count
-            dayOffset = steps - daySteps;
-            //Add one to steps (=1 if offset not set, or +1 if steps count has been resetted by a phone restart)
-            haveSetOffset = true;
-            Log.i(TAG, "  * Updated offset: " + dayOffset);
-        }
-
-        //First 'steps' is 0 an not 1
-        daySteps = (steps+1) - dayOffset;
-        //Log all this
-        Log.i(TAG, "** daySteps :"+ daySteps+" ** stepCounted :"+stepsCounted);
-
-
-        //Save calculated values to SharedPreferences
-        try{
-            dayData.put("steps",daySteps);
-            dayData.put("offset",dayOffset);
-            pData.put(currentDateString,dayData);
-        }catch (JSONException err){
-            Log.e(TAG,"Exception while setting int in JSON for "+currentDateString);
-        }
-        editor.putString(CordovaStepCounter.PEDOMETER_HISTORY_PREF,pData.toString());
-        editor.commit();
     }
 
     @Override
@@ -248,5 +154,6 @@ public class StepCounterService extends Service implements SensorEventListener {
     @Override
     public void onDestroy(){
         Log.i(TAG, "onDestroy");
+        mSensorManager.unregisterListener(this);
     }
 }
