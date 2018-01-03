@@ -27,6 +27,7 @@ module.exports = {
     ACTION_START: "start",
     ACTION_STOP: "stop",
     ACTION_CAN_COUNT_STEPS: "can_count_steps",
+    RESET_STEP_COUNT: "reset_step_count",
 
     start: function (successCallback, errorCallback) {
         cordova.exec(function (res) { successCallback(!!res); }, errorCallback, "CordovaStepCounter", "start", []);
@@ -38,6 +39,11 @@ module.exports = {
 
     deviceCanCountSteps: function (successCallback, errorCallback) {
         cordova.exec(function (res) { successCallback(!!res); }, errorCallback, "CordovaStepCounter", "can_count_steps", []);
+    },
+
+    resetStepCount: function (stepCount, successCallback, errorCallback) {
+        stepCount = parseInt(stepCount) || 0;
+        cordova.exec(function (res) { successCallback(!!res); }, errorCallback, "CordovaStepCounter", "reset_step_count", [stepCount]);
     },
 };
 

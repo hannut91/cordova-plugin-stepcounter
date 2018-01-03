@@ -25,7 +25,7 @@ var pedometer: CMPedometer?
 @objc(CordovaStepCounter) class CordovaStepCounter : CDVPlugin {
     let activityManager = CMMotionActivityManager()
     var db: SQLInterface?
-
+    
     override func pluginInitialize() {
         print("initialize is called");
         pedometer = CMPedometer()
@@ -54,14 +54,14 @@ var pedometer: CMPedometer?
             callbackId: command.callbackId
         )
     }
-
+    
     @objc(stop:) func stop(command: CDVInvokedUrlCommand) {
         print("stop is called!!!")
         if let pedo = pedometer {
             pedo.stopUpdates()
         }
     }
-
+    
     @objc(can_count_steps:) func can_count_steps(command: CDVInvokedUrlCommand) {
         print("can_count_steps is called!!!")
         
@@ -69,7 +69,31 @@ var pedometer: CMPedometer?
             status: CDVCommandStatus_OK,
             messageAs: checkCountingAvailable() ? 1 : 0
         )
-
+        
+        self.commandDelegate!.send(
+            pluginResult,
+            callbackId: command.callbackId
+        )
+    }
+    
+    @objc(reset_step_count:) func reset_step_count(command: CDVInvokedUrlCommand) {
+        print("reset_step_count is called!!!")
+        
+        let latestStepCount = command.arguments[0] as! NSNumber
+        
+        if let dbExist = self.db {
+            do {
+                try dbExist.reset_step_count(stepCount: latestStepCount)
+            } catch {
+                
+            }
+        }
+        
+        let pluginResult = CDVPluginResult(
+            status: CDVCommandStatus_OK,
+            messageAs: 1
+        )
+        
         self.commandDelegate!.send(
             pluginResult,
             callbackId: command.callbackId
@@ -80,7 +104,7 @@ var pedometer: CMPedometer?
         print("initDb is called!!!")
         self.db = SQLInterface()
     }
-
+    
     func onWalk(data: CMPedometerData?, err: Error?) -> Void {
         print("onWalk is called!!!")
         if err != nil {
@@ -133,7 +157,7 @@ func checkCountingAvailable() -> Bool {
             print("걸음수 이벤트 트랙킹이 불가능한 기기 입니다.")
         }
     }
-
+    
     return true
 }
 
@@ -177,7 +201,7 @@ class SQLInterface: NSObject {
     
     
     deinit {
-         sqlite3_close(db)
+        sqlite3_close(db)
     }
     
     func insert_value(startDate: Date, endDate: Date, stepCount: NSNumber) throws {
@@ -187,13 +211,12 @@ class SQLInterface: NSObject {
         let lastSelectQuery = "SELECT * FROM steps ORDER BY _id DESC LIMIT 1"
         if sqlite3_prepare(db, lastSelectQuery, -1, &stmt, nil) == SQLITE_OK {
             if sqlite3_step(stmt) == SQLITE_ROW {
-              latestValue = Int(sqlite3_column_int(stmt, 3))
+                latestValue = Int(sqlite3_column_int(stmt, 3))
             }
         }
         
         latestValue = latestValue + Int(truncating: stepCount) - self.previous
         self.previous = Int(truncating: stepCount)
-        
         
         let query = "INSERT INTO steps (startDate, endDate, stepCount) VALUES (?, ?, ?)"
         
@@ -206,8 +229,19 @@ class SQLInterface: NSObject {
         throw SQLError.QueryError
     }
     
-    func sqlCallback() {
-        print("sqlCallback is called")
+    func reset_step_count(stepCount: NSNumber) throws {
+        defer { sqlite3_finalize(stmt) }
+        let resetQury = "INSERT INTO steps (startDate, endDate, stepCount) VALUES (?, ?," +
+            "((SELECT stepCount FROM steps ORDER BY _id DESC LIMIT 1) - \(stepCount)))"
+        
+        let currentDateTime = Date()
+        
+        if sqlite3_prepare_v2(db, resetQury, -1, &stmt, nil) == SQLITE_OK {
+            sqlite3_bind_int64(stmt, 1, Int64(currentDateTime.timeIntervalSince1970 * 1000))
+            sqlite3_bind_int64(stmt, 2, Int64(currentDateTime.timeIntervalSince1970 * 1000))
+            if sqlite3_step(stmt) == SQLITE_DONE {return}
+        } 
+        throw SQLError.QueryError
     }
     
     func get_values() throws -> [StepStruct] {
