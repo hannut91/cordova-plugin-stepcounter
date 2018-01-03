@@ -48,4 +48,13 @@
     <source-file src="src/android/net/texh/cordovapluginstepcounter/StepCounterBootReceiver.java" target-dir="src/net/texh/cordovapluginstepcounter/"/>
   </platform>
 
+  <platform name="ios">
+    <config-file target="config.xml" parent="/*">
+      <feature name="CordovaStepCounter">
+        <param name="ios-package" value="CordovaStepCounter"/>
+      </feature>
+    </config-file>
+
+    <source-file src="src/ios/CordovaStepCounter.swift" />
+  </platform>
 </plugin>
