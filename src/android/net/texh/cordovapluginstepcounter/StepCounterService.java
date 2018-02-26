@@ -34,33 +34,105 @@ import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
+import android.location.Location;
 import android.os.Binder;
 import android.os.IBinder;
 import android.util.Log;
+
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.tasks.OnSuccessListener;
+
 import java.util.Date;
 
 
 public class StepCounterService extends Service implements SensorEventListener {
 
-    private final  String TAG = "StepCounterService";
+    private final String TAG = "StepCounterService";
     private IBinder mBinder = null;
     private SensorManager mSensorManager;
     private Sensor mStepSensor;
+    private FusedLocationProviderClient mFusedLocationClient;
     SQLiteDatabase database;
     long startDate;
+    double latitude = 0;
+    double longitude = 0;
+    float speed = 0;
+    long locationTime;
+    Location lastLocation;
 
     @Override
     public void onCreate() {
         super.onCreate();
-        Log.i(TAG, "onCreate");
+        Log.i(TAG, "StepCounterService onCreate is called!!");
+        setLocation();
         openDatabase();
         createTable();
         startDate = new Date().getTime();
     }
 
+    public void setLocation() {
+        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
+        LocationRequest mLocationRequest = new LocationRequest();
+        mLocationRequest.setInterval(10000);
+//        mLocationRequest.setFastestInterval(1000);
+        mLocationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+        LocationCallback mLocationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(LocationResult locationResult) {
+                Location currentLocation = locationResult.getLastLocation();
+                long currentTime = currentLocation.getTime();
+
+                if(latitude == 0 || longitude == 0) {
+                    latitude = currentLocation.getLatitude();
+                    longitude = currentLocation.getLongitude();
+                    speed = currentLocation.getSpeed();
+                    locationTime = currentTime;
+                    lastLocation = currentLocation;
+                    return;
+                }
+
+                latitude = currentLocation.getLatitude();
+                longitude = currentLocation.getLongitude();
+
+                if(currentLocation.hasSpeed() && currentLocation.getSpeed() > 0) {
+                    speed = currentLocation.getSpeed();
+                } else {
+                    speed = lastLocation.distanceTo(currentLocation) / ((currentTime - locationTime) / 1000);
+                }
+
+                locationTime = currentTime;
+                lastLocation = locationResult.getLastLocation();
+
+            }
+        };
+
+        try {
+            mFusedLocationClient.requestLocationUpdates(mLocationRequest,
+                    mLocationCallback,
+                    null /* Looper */);
+        } catch (SecurityException e) {
+
+        }
+    }
+
+    public void openDatabase() {
+        database = openOrCreateDatabase("getwalk.db", MODE_PRIVATE, null);
+    }
+
+    public void createTable() {
+        if (database != null) {
+            String sql = "CREATE TABLE IF NOT EXISTS steps (_id integer PRIMARY KEY autoincrement, startDate integer, endDate integer, stepCount integer, latitude real, longitude real, speed real, synced integer)";
+            database.execSQL(sql);
+        }
+    }
+
     @Override
     public IBinder onBind(Intent intent) {
-        mBinder   = new StepCounterServiceBinder();
+        mBinder = new StepCounterServiceBinder();
         Log.i(TAG, "onBind" + intent);
         return mBinder;
     }
@@ -71,22 +143,12 @@ public class StepCounterService extends Service implements SensorEventListener {
         }
     }
 
-    public void openDatabase() {
-        database = openOrCreateDatabase("getwalk.db", MODE_PRIVATE, null);
-    }
-
-    public void createTable() {
-        if(database  != null) {
-            String sql = "CREATE TABLE IF NOT EXISTS steps (_id integer PRIMARY KEY autoincrement, startDate integer, endDate integer, stepCount integer)";
-            database.execSQL(sql);
-        }
-    }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.i(TAG, "onStartCommand is called");
         mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
-        mStepSensor    = mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
+        mStepSensor = mSensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER);
         mSensorManager.registerListener(this, mStepSensor, SensorManager.SENSOR_DELAY_NORMAL);
         return Service.START_STICKY;
     }
@@ -100,19 +162,25 @@ public class StepCounterService extends Service implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent sensorEvent) {
+        int stepCount = (int) sensorEvent.values[0];
         long endDate = new Date().getTime();
-        int stepCount = (int)sensorEvent.values[0];
-        insertData(endDate, stepCount);
+        insertData(stepCount, endDate);
     }
 
-    public void insertData(long endDate, int stepCount) {
-        if(database != null) {
+    public void insertData(int currentStepCount, long endDate) {
+        if (database != null) {
             SharedPreferences sharedPref = getSharedPreferences("previousStepCount", Context.MODE_PRIVATE);
-            int previous = sharedPref.getInt("previousStepCount", 0);
+            int previous = sharedPref.getInt("previousStepCount", -1);
+            Log.d(TAG, "currentStepCount" + currentStepCount);
+            Log.d(TAG, "previous" + previous);
 
-            if(stepCount < previous) {
-                previous = 0;
+            if (previous < 0) {
+                SharedPreferences.Editor editor = sharedPref.edit();
+                editor.putInt("previousStepCount", currentStepCount);
+                editor.commit();
+                return;
             }
+
 
             String latestSelectQuery = "SELECT * FROM steps ORDER BY _id DESC LIMIT 1";
             Cursor cursor = database.rawQuery(latestSelectQuery, null);
@@ -123,18 +191,18 @@ public class StepCounterService extends Service implements SensorEventListener {
                 latestStepCount = cursor.getInt(3);
             }
 
-            Log.i(TAG, "latestStepCount: " + latestStepCount);
-            Log.i(TAG, "previous: " + previous);
-            Log.i(TAG, "stepCount: " + stepCount);
-
-            latestStepCount = latestStepCount + (stepCount - previous);
+            if(currentStepCount - previous < 0) {
+                latestStepCount = previous + 1;
+            } else {
+                latestStepCount = latestStepCount + (currentStepCount - previous);
+            }
 
             SharedPreferences.Editor editor = sharedPref.edit();
-            editor.putInt("previousStepCount", stepCount);
+            editor.putInt("previousStepCount", currentStepCount);
             editor.commit();
 
-            String sql = "insert into steps (startDate, endDate, stepCount) values (?, ?, ?)";
-            Object[] params = {startDate, endDate, latestStepCount};
+            String sql = "INSERT INTO steps (startDate, endDate, stepCount, latitude, longitude, speed, synced) VALUES (?, ?, ?, ?, ?, ?, ?)";
+            Object[] params = {startDate, endDate, latestStepCount, latitude, longitude, speed, 0};
             database.execSQL(sql, params);
         }
     }
