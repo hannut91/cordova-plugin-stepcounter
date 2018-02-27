@@ -16,6 +16,11 @@
   </js-module>
 
   <platform name="android">
+    <config-file target="AndroidManifest.xml" parent="/*">
+      <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+      <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+      <uses-feature android:name="android.hardware.location.gps" />
+    </config-file>
 
     <config-file target="AndroidManifest.xml" parent="/manifest/application">
         <service android:name="net.texh.cordovapluginstepcounter.StepCounterService" android:enabled="true" />
